@@ -1,16 +1,18 @@
 // ==UserScript==
 // @name         Show Total Lesson Count - WaniKani
-// @namespace    http://tampermonkey.net/
-// @version      0.5.10
+// @namespace    https://codeberg.org/lupomikti
+// @version      0.5.11
 // @description  Changes the count of lessons on the Today's Lessons tile to show the total number of available lessons in addition to or in place of the daily number you can set
 // @license      MIT
 // @author       LupoMikti
 // @match        https://www.wanikani.com/*
 // @grant        none
-// @supportURL   https://community.wanikani.com/t/userscript-show-total-lesson-count/66776
+// @supportURL   https://github.com/lupomikti/Userscripts/issues
 // ==/UserScript==
 
-(async function() {
+// Additional supportURL: https://community.wanikani.com/t/userscript-show-total-lesson-count/66776
+
+(async function () {
     'use strict';
 
     /* global wkof */
@@ -60,7 +62,7 @@
     await wkof.load_script(wkofTurboEventsScriptUrl, /* use_cache */ true);
     addToDebugLog(`Checking if TurboEvents library script is loaded in...`)
     let injectedDependency = document.head.querySelector('script[uid*="Turbo"]');
-    addToDebugLog(`Turbo Events library ${injectedDependency ? 'is' : 'is NOT' } loaded.`);
+    addToDebugLog(`Turbo Events library ${injectedDependency ? 'is' : 'is NOT'} loaded.`);
 
     if (INTERNAL_DEBUG_TURBO_HANDLING) {
         window.addEventListener('turbo:load', () => { console.log(`DEBUG: turbo:load has fired`); });
@@ -110,7 +112,7 @@
 
         wkof.turbo.events.frame_load.addListener(async (e) => {
             const frameId = e.target.id;
-            addToDebugLog(`turbo:frame-load was fired for "#${frameId}", ${ ['todays-lessons-frame', 'lesson-and-review-count-frame'].includes(frameId) ? 'calling main function' : 'doing nothing...' }`);
+            addToDebugLog(`turbo:frame-load was fired for "#${frameId}", ${['todays-lessons-frame', 'lesson-and-review-count-frame'].includes(frameId) ? 'calling main function' : 'doing nothing...'}`);
             if (!globalState.stateStarting) {
                 addToDebugLog(`DETOUR - turbo:frame-load was fired before we could begin starting or after main fully finished before frame events fired; changing following invocations of main() to _start() if we are not 'doing nothing'`);
             }
@@ -131,20 +133,20 @@
 
         addToDebugLog(`All turbo callbacks have been sent to TurboEvents library to be registered`);
     }).catch((err) => { addToDebugLog(`TurboEvents library rejected with error: ${err}`); })
-    .finally(() => {
-        if (INTERNAL_DEBUG_TURBO_HANDLING) {
-            addToDebugLog(`SOURCE = "turbo ready finally"`);
-            printDebugLog(INTERNAL_DEBUG_TURBO_HANDLING);
-        }
-        _init(`wkof.ready('TurboEvents') finally callback`);
-    });
+        .finally(() => {
+            if (INTERNAL_DEBUG_TURBO_HANDLING) {
+                addToDebugLog(`SOURCE = "turbo ready finally"`);
+                printDebugLog(INTERNAL_DEBUG_TURBO_HANDLING);
+            }
+            _init(`wkof.ready('TurboEvents') finally callback`);
+        });
 
     async function _start() {
         addToDebugLog(`Starting...`);
         wkof.include('Settings, Menu, Apiv2');
         await wkof.ready('Settings, Menu, Apiv2').then(loadSettings).then(insertMenu).then(main)
-        .catch((err) => { addToDebugLog(`wkof.ready('Settings, Menu, Apiv2') rejected (or callbacks threw an exception) with error: ${err}`); })
-        .finally(() => { if (INTERNAL_DEBUG_TURBO_HANDLING) { addToDebugLog(`SOURCE = "wkof modules ready finally"`); printDebugLog(INTERNAL_DEBUG_TURBO_HANDLING); } });
+            .catch((err) => { addToDebugLog(`wkof.ready('Settings, Menu, Apiv2') rejected (or callbacks threw an exception) with error: ${err}`); })
+            .finally(() => { if (INTERNAL_DEBUG_TURBO_HANDLING) { addToDebugLog(`SOURCE = "wkof modules ready finally"`); printDebugLog(INTERNAL_DEBUG_TURBO_HANDLING); } });
     }
 
     function loadSettings() {
@@ -157,7 +159,7 @@
             enableDebugging: true,
         };
 
-        return wkof.Settings.load(scriptId, defaults).then(function(wkof_settings) {settings = wkof_settings;});
+        return wkof.Settings.load(scriptId, defaults).then(function (wkof_settings) { settings = wkof_settings; });
     }
 
     function insertMenu() {
@@ -198,15 +200,15 @@
                 setOwnPreferredDaily: {
                     type: 'checkbox',
                     label: '(DEPRECATED 1)',
-    hover_tip: `THIS SETTING HAS BEEN DEPRECATED DUE TO THE OFFICIAL SETTING FROM WANIKANI.`,
+                    hover_tip: `THIS SETTING HAS BEEN DEPRECATED DUE TO THE OFFICIAL SETTING FROM WANIKANI.`,
                     default: false,
                 },
                 preferredDailyAmount: {
                     type: 'number',
                     label: '(DEPRECATED 2)',
-    hover_tip: `THIS SETTING HAS BEEN DEPRECATED DUE TO THE OFFICIAL SETTING FROM WANIKANI.`,
-    min: 0,
-    max: 100,
+                    hover_tip: `THIS SETTING HAS BEEN DEPRECATED DUE TO THE OFFICIAL SETTING FROM WANIKANI.`,
+                    min: 0,
+                    max: 100,
                 },
                 enableDebugging: {
                     type: 'checkbox',
@@ -222,16 +224,15 @@
     }
 
     function getCountContainers() {
-        let dashboardTileCountContainer = document.querySelector('.todays-lessons__count-text .count-bubble');
-        let navBarCountContainer = document.querySelector('.lesson-and-review-count__count');
+        let dashboardTileCountContainer = document.querySelector('.todays-lessons-widget__count-text .count-bubble');
 
-        if (globalState.initialLoad && (dashboardTileCountContainer || navBarCountContainer)) {
-            let container = dashboardTileCountContainer ?? navBarCountContainer;
+        if (globalState.initialLoad && (dashboardTileCountContainer)) {
+            let container = dashboardTileCountContainer;
             todaysLessonsCount = parseInt(container.textContent);
             globalState.initialLoad = false;
         }
 
-        return [dashboardTileCountContainer, navBarCountContainer];
+        return [dashboardTileCountContainer];
     }
 
     async function main() {
@@ -270,10 +271,8 @@
             addToDebugLog(`starting = ${globalState.stateStarting}, turboEventBusy = ${globalState.turboEventBusy}, retries = ${globalState.mainRetryCounter}`)
             if (globalState.stateStarting && !globalState.turboEventBusy && globalState.mainRetryCounter > 0) {
                 addToDebugLog(`Turbo Events have settled but we have not verified frames, using alternate verification...`);
-                let tmpContainer = document.getElementById('todays-lessons-frame')?.querySelector('.todays-lessons__content');
+                let tmpContainer = document.querySelector('.todays-lessons-widget__count-text');
                 if (tmpContainer && tmpContainer.childElementCount > 0) globalState.todaysLessonsFrameLoaded = true;
-                tmpContainer = document.getElementById('lesson-and-review-count-frame')?.querySelector('.lesson-and-review-count');
-                if (tmpContainer && tmpContainer.childElementCount > 0) globalState.navBarCountFrameLoaded = true;
                 mainSource = 'main() function, no frames alternate verification';
                 globalState.mainRetryCounter--;
                 addToDebugLog(`Alternate verification process completed, retrying main(), ${globalState.mainRetryCounter} retries left...`);
@@ -315,17 +314,19 @@
             addToDebugLog(`Setting display amount for navigation bar, set to ${lessonCountContainers[1].textContent}`);
         }
 
-        if ((settings.showTotalOnly && totalLessonCount === 0) || (!settings.showTotalOnly && todaysCountForDisplay === 0)) {
-            addToDebugLog(`Hiding start button due to having 0 lessons with configured count source`);
-            // hide the start button if it is not already, TODO: disable nav bar button if it is not already
-            let startButton = document.querySelector('.todays-lessons-button--start')
-            if (startButton && startButton.checkVisibility()) {
-                startButton.style.display = 'none';
-            }
-        }
+        // The commented code below is useless because the dashboard hides the Start button anyway
+
+        // if ((settings.showTotalOnly && totalLessonCount === 0) || (!settings.showTotalOnly && todaysCountForDisplay === 0)) {
+        //     addToDebugLog(`Hiding start button due to having 0 lessons with configured count source`);
+        //     // hide the start button if it is not already, TODO: disable nav bar button if it is not already
+        //     let startButton = document.querySelector('.todays-lessons-widget__button.todays-lessons-widget__button--start')//
+        //     if (startButton && startButton.checkVisibility()) {
+        //         startButton.style.display = 'none';
+        //     }
+        // }
 
         // hide "Today's" subtitle
-        let lessonSubtitle = document.querySelector('.todays-lessons__subtitle');
+        let lessonSubtitle = document.querySelector('.todays-lessons-widget__subtitle');
 
         if (lessonSubtitle && lessonSubtitle.checkVisibility()) {
             addToDebugLog(`Hiding the "Today's" subtitle on the lesson tile`);
