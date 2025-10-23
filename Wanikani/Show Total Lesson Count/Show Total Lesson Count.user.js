@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Show Total Lesson Count - WaniKani
 // @namespace    https://codeberg.org/lupomikti
-// @version      0.5.11
-// @description  Changes the count of lessons on the Today's Lessons tile to show the total number of available lessons in addition to or in place of the daily number you can set
+// @version      0.6.0
+// @description  Add the count of total lessons to the Today's Lessons widget
 // @license      MIT
 // @author       LupoMikti
 // @match        https://www.wanikani.com/*
@@ -74,7 +74,7 @@
         if (globalState.stateStarting) { addToDebugLog(`SOURCE = "${source}" | We are already in the starting state, no need to initialize, returning...`); return; }
         addToDebugLog(`SOURCE = "${source}" | Setting global state and calling _start()`);
         globalState.initialLoad = globalState.stateStarting = true;
-        globalState.hasOutputLog = globalState.todaysLessonsFrameLoaded = globalState.navBarCountFrameLoaded = false;
+        globalState.hasOutputLog = globalState.todaysLessonsFrameLoaded = false;
         await _start();
     };
 
@@ -144,7 +144,7 @@
     async function _start() {
         addToDebugLog(`Starting...`);
         wkof.include('Settings, Menu, Apiv2');
-        await wkof.ready('Settings, Menu, Apiv2').then(loadSettings).then(insertMenu).then(main)
+        await wkof.ready('Settings, Menu, Apiv2').then(loadSettings).then(insertMenu).then(insertStylesheet).then(main)
             .catch((err) => { addToDebugLog(`wkof.ready('Settings, Menu, Apiv2') rejected (or callbacks threw an exception) with error: ${err}`); })
             .finally(() => { if (INTERNAL_DEBUG_TURBO_HANDLING) { addToDebugLog(`SOURCE = "wkof modules ready finally"`); printDebugLog(INTERNAL_DEBUG_TURBO_HANDLING); } });
     }
@@ -154,8 +154,6 @@
 
         let defaults = {
             showTotalOnly: false,
-            setOwnPreferredDaily: false,
-            preferredDailyAmount: wkof.user.preferences.lessons_batch_size * 3,
             enableDebugging: true,
         };
 
@@ -197,19 +195,6 @@
                     hover_tip: `Changes display between "<today's lesson count> / <total lesson count>" and just "<total lesson count>"`,
                     default: false,
                 },
-                setOwnPreferredDaily: {
-                    type: 'checkbox',
-                    label: '(DEPRECATED 1)',
-                    hover_tip: `THIS SETTING HAS BEEN DEPRECATED DUE TO THE OFFICIAL SETTING FROM WANIKANI.`,
-                    default: false,
-                },
-                preferredDailyAmount: {
-                    type: 'number',
-                    label: '(DEPRECATED 2)',
-                    hover_tip: `THIS SETTING HAS BEEN DEPRECATED DUE TO THE OFFICIAL SETTING FROM WANIKANI.`,
-                    min: 0,
-                    max: 100,
-                },
                 enableDebugging: {
                     type: 'checkbox',
                     label: 'Enable console debugging',
@@ -223,7 +208,36 @@
         dialog.open();
     }
 
-    function getCountContainers() {
+    function insertStylesheet() {
+        const css = `
+.todays-lessons-widget__title-container:has(.todays-lessons-widget__title-group-container) {
+  display: inline-flex;
+  gap: var(--spacing-normal);
+  justify-content: space-evenly;
+}
+
+.todays-lessons-widget__title-group-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.todays-lessons-widget__title-group-container .todays-lessons-widget__subtitle {
+  margin-top: 2px;
+}
+
+.todays-lessons-widget__title-container:has(.todays-lessons-widget__title-group-container) + .todays-lessons-widget__text {
+  align-self: center;
+}
+`;
+        if (document.getElementById('total-lesson-count-style') === null) {
+            let styleSheet = document.createElement('style');
+            styleSheet.id = 'total-lesson-count-style';
+            styleSheet.textContent = css;
+            document.head.appendChild(styleSheet);
+        }
+    }
+
+    function getCountContainer() {
         let dashboardTileCountContainer = document.querySelector('.todays-lessons-widget__count-text .count-bubble');
 
         if (globalState.initialLoad && (dashboardTileCountContainer)) {
@@ -232,7 +246,7 @@
             globalState.initialLoad = false;
         }
 
-        return [dashboardTileCountContainer];
+        return dashboardTileCountContainer;
     }
 
     async function main() {
@@ -259,12 +273,12 @@
         }
 
         let totalLessonCount = summary_data.lessons[0].subject_ids.length;
-        let lessonCountContainers;
+        let lessonCountContainer;
 
-        if (globalState.todaysLessonsFrameLoaded || globalState.navBarCountFrameLoaded) {
-            addToDebugLog(`Frame(s) loaded, retrieving containers in frames containing the counts...`);
-            lessonCountContainers = getCountContainers();
-            addToDebugLog(`Count containers have been retrieved`);
+        if (globalState.todaysLessonsFrameLoaded) {
+            addToDebugLog(`Frame loaded, retrieving container in frame containing the count...`);
+            lessonCountContainer = getCountContainer();
+            addToDebugLog(`Count container has been retrieved`);
         }
         else {
             addToDebugLog(`No frames loaded, checking to see if all listened-to turbo events have settled...`);
@@ -293,42 +307,67 @@
 
         let todaysCountForDisplay = todaysLessonsCount;
 
-        if (lessonCountContainers.every(node => node == null)) {
-            addToDebugLog(`No nodes in containers`);
+        if (lessonCountContainer == null) {
+            addToDebugLog(`Container is null`);
             addToDebugLog(`Main function is returning (source = [${mainSource}])`);
             //if (settings.enableDebugging) printDebugLog(INTERNAL_DEBUG_TURBO_HANDLING);
             return;
         }
-        addToDebugLog(`At least one container exists`);
+        addToDebugLog(`Container exists`);
         globalState.stateStarting = false;
 
         if (isNaN(todaysLessonsCount)) todaysCountForDisplay = 0;
 
-        if (lessonCountContainers[0]) {
-            lessonCountContainers[0].textContent = settings.showTotalOnly ? totalLessonCount : todaysCountForDisplay + ' / ' + totalLessonCount;
-            addToDebugLog(`Setting display amount for Today's Lessons tile, set to ${lessonCountContainers[0].textContent}`);
+        if (lessonCountContainer) {
+            if (settings.showTotalOnly) {
+                lessonCountContainer.textContent = totalLessonCount;
+                addToDebugLog(`Setting display amount for Today's Lessons tile, set to ${lessonCountContainer.textContent}`);
+            }
+            else {
+                lessonCountContainer.textContent = todaysCountForDisplay; // in case it is zero
+                let titleContainer = lessonCountContainer.parentNode.parentNode.parentNode; // .todays-lessons-widget__title-container
+
+                if (!titleContainer.children[0].className.includes(`__title-group-container`)) {
+                    // clone existing children, and modify clones to make new children, store in a temp array
+                    let tempArray = [];
+                    for (let elem of titleContainer.children) {
+                        let clone = elem.cloneNode(true);
+                        if (clone.className.includes(`__subtitle`)) {
+                            clone.textContent = "Total";
+                        }
+                        if (clone.className.includes(`__title`)) {
+                            let tmpNode = clone.querySelector(`.todays-lessons-widget__count-text .count-bubble`);
+                            if (tmpNode) tmpNode.textContent = totalLessonCount;
+                        }
+                        tempArray.push(clone);
+                    }
+
+                    // wrap the existing children in a new div.todays-lessons-widget__title-group-container
+                    // wrap the new children in the same kind of wrapper
+                    // append second wrapper after first wrapper
+
+                    let wrapper1 = document.createElement('div');
+                    wrapper1.classList.add(`todays-lessons-widget__title-group-container`);
+                    titleContainer.insertAdjacentElement('beforebegin', wrapper1);
+                    wrapper1.append(...titleContainer.children);
+                    titleContainer.prepend(wrapper1); // this should move the wrapper inside titleContainer
+
+                    let wrapper2 = document.createElement('div');
+                    wrapper2.classList.add(`todays-lessons-widget__title-group-container`);
+                    titleContainer.insertAdjacentElement('beforebegin', wrapper2);
+                    wrapper2.append(...tempArray);
+                    titleContainer.append(wrapper2);
+
+                    addToDebugLog(`Created additional cloned nodes to display Total Lesson Count.`);
+                }
+            }
         }
 
-        if (lessonCountContainers[1]) {
-            lessonCountContainers[1].textContent = settings.showTotalOnly ? totalLessonCount : todaysCountForDisplay;
-            addToDebugLog(`Setting display amount for navigation bar, set to ${lessonCountContainers[1].textContent}`);
-        }
+        // hide "Today's" subtitle if showing only total
 
-        // The commented code below is useless because the dashboard hides the Start button anyway
-
-        // if ((settings.showTotalOnly && totalLessonCount === 0) || (!settings.showTotalOnly && todaysCountForDisplay === 0)) {
-        //     addToDebugLog(`Hiding start button due to having 0 lessons with configured count source`);
-        //     // hide the start button if it is not already, TODO: disable nav bar button if it is not already
-        //     let startButton = document.querySelector('.todays-lessons-widget__button.todays-lessons-widget__button--start')//
-        //     if (startButton && startButton.checkVisibility()) {
-        //         startButton.style.display = 'none';
-        //     }
-        // }
-
-        // hide "Today's" subtitle
         let lessonSubtitle = document.querySelector('.todays-lessons-widget__subtitle');
 
-        if (lessonSubtitle && lessonSubtitle.checkVisibility()) {
+        if (settings.showTotalOnly && lessonSubtitle && lessonSubtitle.checkVisibility()) {
             addToDebugLog(`Hiding the "Today's" subtitle on the lesson tile`);
             lessonSubtitle.style.display = 'none';
         }
