@@ -1,0 +1,27 @@
+{
+    "lint": {
+        "rules": {
+            "tags": [
+                "recommended"
+            ],
+            "include": [
+                "no-await-in-loop",
+                "default-param-last",
+                "camelcase"
+            ],
+            "exclude": [
+                "no-window",
+                "no-window-prefix"
+            ]
+        }
+    },
+    "fmt": {
+        "useTabs": false,
+        "indentWidth": 4,
+        "semiColons": true,
+        "spaceAround": true,
+        "lineWidth": 120,
+        "nextControlFlowPosition": "nextLine",
+        "operatorPosition": "nextLine"
+    }
+}
