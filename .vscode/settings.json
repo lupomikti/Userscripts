@@ -1,0 +1,6 @@
+{
+    "deno.enablePaths": [
+        "./Wanikani"
+    ],
+    "editor.defaultFormatter": "denoland.vscode-deno"
+}
