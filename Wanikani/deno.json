@@ -1,4 +1,16 @@
 {
+    "compilerOptions": {
+        "checkJs": true,
+        "lib": [
+            "dom",
+            "dom.iterable",
+            "dom.asynciterable",
+            "deno.ns"
+        ],
+        "types": [
+            "./wanikani.d.ts"
+        ]
+    },
     "lint": {
         "rules": {
             "tags": [
@@ -11,7 +23,8 @@
             ],
             "exclude": [
                 "no-window",
-                "no-window-prefix"
+                "no-window-prefix",
+                "no-explicit-any"
             ]
         }
     },

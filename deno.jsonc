@@ -1,0 +1,7 @@
+{
+    "workspace": ["./Wanikani"],
+    "imports": {
+        "@types/jquery": "npm:@types/jquery@^3.5.33",
+        "@types/tampermonkey": "npm:@types/tampermonkey@^5.0.5"
+    }
+}
