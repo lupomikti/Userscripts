@@ -52,6 +52,11 @@ declare namespace Core {
         load_script: (url: string, use_cache?: boolean) => Promise<string | undefined>
         load_css: (url: string, use_cache?: boolean) => Promise<string | undefined>
         file_cache: FileCache
+        on_pageload: (
+            url_patterns: string | RegExp | Array<string|RegExp>,
+            load_handler: (page: URL, idx: number) => void|any,
+            unload_handler?: (page: URL, idx: number) => void|any,
+        ) => void
     }
 }
 
@@ -212,7 +217,7 @@ declare namespace Apiv2 {
             fetch_endpoint: (endpoint_name: ApiEndpoint, options?: FetchEndpointOptions) => Promise<any>
             get_endpoint: (endpoint_name: ApiEndpoint, options?: GetEndpointOptions) => Promise<any>
             clear_cache: (include_non_user?: boolean) => Promise<undefined>
-            apiv2_is_valid_apikey_format: (apikey: string) => boolean
+            is_valid_apikey_format: (apikey: string) => boolean
             spoof: (key: string) => void
         }
         user: User
