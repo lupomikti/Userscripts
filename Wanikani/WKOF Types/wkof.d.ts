@@ -54,8 +54,13 @@ declare namespace Core {
         file_cache: FileCache
         on_pageload: (
             url_patterns: string | RegExp | Array<string|RegExp>,
-            load_handler: (page: URL, idx: number) => void|any,
-            unload_handler?: (page: URL, idx: number) => void|any,
+            load_handler: (current_page: URL, idx: number) => void|any,
+            unload_handler?: (last_page: URL, idx: number) => void|any,
+        ) => void
+        on_frameload: (
+            url_patterns: string | RegExp | Array<string|RegExp>,
+            load_handler: (current_frame: string, idx: number, frame_id: string) => void|any,
+            unload_handler?: (current_frame: string, idx: number) => void|any,
         ) => void
     }
 }
