@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Show Total Lesson Count - WaniKani
+// @name         WaniKani Show Total Lesson Count
 // @namespace    https://codeberg.org/lupomikti
-// @version      0.6.3
+// @version      0.7.0
 // @description  Add the count of total lessons to the Today's Lessons widget
-// @license      MIT
+// @license      MIT; http://opensource.org/licenses/MIT
 // @author       LupoMikti
 // @match        https://www.wanikani.com/*
 // @grant        none
@@ -17,8 +17,6 @@
 ( async function () {
     "use strict";
 
-    /* global wkof */
-
     /** @typedef {{[key: string]: any}} WKOFDictionary */
 
     const scriptId = "show_total_lesson_count";
@@ -26,23 +24,36 @@
 
     const globalState = {
         initialLoad: true,
-        stateStarting: false,
-        todaysLessonsFrameLoaded: false,
-        navBarCountFrameLoaded: false,
+        pageLoaded: false,
         hasOutputLog: false,
-        turboEventBusy: false,
         mainRetryCounter: 4,
+        wkofCallbacksSettled: false,
     };
 
     let debugLogText = `START: ${scriptName} Debug Log:\n`;
     let mainSource = "";
-    const INTERNAL_DEBUG_TURBO_HANDLING = false;
 
+    const INTERNAL_DEBUG = false;
     let todaysLessonsCount = 0;
 
     /**
      * A dictionary of string keys to any type values which will be passed to wkof Settings.Module
      * @type {WKOFDictionary} */ let settings;
+
+    /**
+     * @type {any} */ let summaryData;
+
+    if ( !window.wkof ) {
+        // deno-fmt-ignore
+        if (confirm(`${scriptName} requires Wanikani Open Framework.\nDo you want to be forwarded to the installation instructions?`)) {
+            window.location.href =
+                "https://community.wanikani.com/t/instructions-installing-wanikani-open-framework/28549";
+        }
+        return;
+    }
+
+    // destructure to explicitly use wkof without window prefix
+    const { wkof } = window;
 
     /**
      * Creates a line to be added to a log of messages output to console.debug with ISO Timestamp
@@ -64,165 +75,70 @@
         debugLogText = `START: ${scriptName} Debug Log:\n`;
     }
 
-    if ( !window.wkof ) {
-        // deno-fmt-ignore
-        if (confirm(`${scriptName} requires Wanikani Open Framework.\nDo you want to be forwarded to the installation instructions?`)) {
-            window.location.href =
-                "https://community.wanikani.com/t/instructions-installing-wanikani-open-framework/28549";
-        }
+    if ( !wkof.version || wkof.version.compare_to( "1.2.11" ) === "older" ) {
+        confirm(
+            `${scriptName} requires WaniKani Open Framework version 1.2.11 or higher. You have ${wkof.version.value}. Please update to use this script.`,
+        );
         return;
     }
 
-    // destructure to explicitly use wkof without window prefix
-    const { wkof } = window;
+    wkof.on_pageload(
+        [
+            "/",
+            "/dashboard",
+            /^\/(?:level|radicals|kanji|vocabulary)\/.+$/, // Individual item pages + the level glossary page of a specific level
+            /^\/(?:radicals|kanji|vocabulary)$/, // Item glossary pages with the nav bar
+            /^\/(?:settings|recent-.+)$/, // All other pages with the nav bar
+        ],
+        start,
+        markUnloaded,
+    );
 
-    const wkofTurboEventsScriptUrl =
-        "https://update.greasyfork.org/scripts/501980/1426289/Wanikani%20Open%20Framework%20Turbo%20Events.user.js";
-    addToDebugLog( `Attempting to load the TurboEvents library script...` );
-    await wkof.load_script( wkofTurboEventsScriptUrl, /* use_cache */ true );
-    addToDebugLog( `Checking if TurboEvents library script is loaded in...` );
-    const injectedDependency = document.head.querySelector( 'script[uid*="Turbo"]' );
-    addToDebugLog( `Turbo Events library ${injectedDependency ? "is" : "is NOT"} loaded.` );
-
-    if ( INTERNAL_DEBUG_TURBO_HANDLING ) {
-        window.addEventListener( "turbo:load", () => {
-            console.log( `DEBUG: turbo:load has fired` );
-        } );
-        window.addEventListener( "turbo:before-frame-render", ( e ) => {
-            // @ts-ignore: the target of turbo events should be an HTMLElement, so id property would exist
-            console.log( `DEBUG: turbo:before-frame-render has fired for '#${e.target?.id}'` );
-        } );
-        window.addEventListener( "turbo:frame-load", ( e ) => {
-            // @ts-ignore: the target of turbo events should be an HTMLElement, so id property would exist
-            console.log( `DEBUG: turbo:frame-load has fired for '#${e.target?.id}'` );
-        } );
-    }
+    wkof.on_frameload( [ "*todays-lessons", "/lesson-and-review-count" ], renderFrame );
 
     /**
-     * Initialization function that should only be called once per page load
-     *
-     * @param {string} source
+     * @param {string} currentFrame The pathname of the src url for the current turbo-frame element
+     * @param {Number} frameIndex Integer representing the index of the current frame's regex in the url array in wkof
+     * @param {string} frameId The HTML id attribute's value for the current turbo-frame element
      */
-    const _init = async ( source ) => {
-        if ( globalState.stateStarting ) {
+    function renderFrame( currentFrame, frameIndex, frameId ) {
+        addToDebugLog( `Callback for turbo:frame-load event for frame "${currentFrame}" is executing.` );
+        mainSource = `wkof.on_frameload load_handler callback`;
+        main( currentFrame, frameIndex, frameId );
+    }
+
+    wkof.include( "Settings, Menu, Apiv2" );
+    await wkof.ready( "Settings, Menu, Apiv2" ).then( loadSettings ).then( insertMenu ).then( getSummaryData )
+        .catch( ( err ) => {
             addToDebugLog(
-                `SOURCE = "${source}" | We are already in the starting state, no need to initialize, returning...`,
+                `wkof.ready('Settings, Menu, Apiv2') rejected (or callbacks threw an exception) with error: ${err}`,
             );
-            return;
-        }
-        addToDebugLog( `SOURCE = "${source}" | Setting global state and calling _start()` );
-        globalState.initialLoad = globalState.stateStarting = true;
-        globalState.mainRetryCounter = 4; // ensure retries are set to 4 when initializing
-        globalState.hasOutputLog = globalState.todaysLessonsFrameLoaded = globalState.navBarCountFrameLoaded = false;
-        await _start();
-    };
+            if ( settings.enableDebugging ) printDebugLog( INTERNAL_DEBUG );
+        } ).finally( () => {
+            addToDebugLog( `Executing WKOF callback finally block` );
+            globalState.wkofCallbacksSettled = true;
+        } );
 
-    wkof.ready( "TurboEvents" ).then( () => {
-        addToDebugLog( `Start of TurboEvents ready callback` );
+    async function getSummaryData() {
+        addToDebugLog( `Retrieving summary data via await of the endpoint...` );
+        summaryData = await wkof.Apiv2.get_endpoint( "summary" );
+        addToDebugLog( `Summary data has been retrieved` );
+    }
 
-        const urlList = [
-            wkof.turbo.common.locations.dashboard,
-            wkof.turbo.common.locations.items_pages,
-            // vvvv Any page with the nav bar that's not one of the above locations vvvv
-            /^https:\/\/www\.wanikani\.com\/(settings|level|radicals|kanji|vocabulary)(\/|\?difficulty=).+\/?$/,
-        ];
+    function markUnloaded() {
+        addToDebugLog( `Marking page as fully unloaded` );
+        globalState.pageLoaded = false;
+    }
 
-        wkof.turbo.events.load.addListener( async ( _e ) => {
-            globalState.turboEventBusy = true;
-            await _init( "turbo:load" ).then( () => {
-                globalState.turboEventBusy = false;
-            } );
-        }, { urls: urlList, passive: true } );
-
-        wkof.turbo.events.before_frame_render.addListener( async ( e ) => {
-            globalState.turboEventBusy = true;
-            if ( e.target ) {
-                const frameId = /** @type {Element} */ ( e.target ).id;
-                addToDebugLog( `turbo:before-frame-render has fired for "#${frameId}"` );
-                if ( globalState.initialLoad && !globalState.stateStarting ) {
-                    addToDebugLog(
-                        `globalState.initialLoad is true (no frames were previously retrieved) and we are not already in starting state, starting initialization sequence...`,
-                    );
-                    await _init( "turbo:before-frame-render" );
-                    return;
-                }
-                // NOTE: with the widget system in place, this ID is never present anymore
-                if ( frameId === "todays-lessons-frame" ) {
-                    globalState.todaysLessonsFrameLoaded = false;
-                }
-                // NOTE: this frame still fires on the dashboard but will never load content, it should only be checked if we are on a non-dashboard URL
-                else if ( frameId === "lesson-and-review-count-frame" ) {
-                    globalState.navBarCountFrameLoaded = false;
-                }
-            }
-        }, { urls: urlList, passive: true } );
-
-        wkof.turbo.events.frame_load.addListener( async ( e ) => {
-            if ( e.target ) {
-                const frameId = /** @type {Element} */ ( e.target ).id;
-                addToDebugLog(
-                    `turbo:frame-load was fired for "#${frameId}", ${
-                        [ "todays-lessons-frame", "lesson-and-review-count-frame" ].includes( frameId )
-                            ? "calling main function"
-                            : "doing nothing..."
-                    }`,
-                );
-                if ( !globalState.stateStarting ) {
-                    addToDebugLog(
-                        `DETOUR - turbo:frame-load was fired before we could begin starting or after main fully finished before frame events fired; changing following invocations of main() to _start() if we are not 'doing nothing'`,
-                    );
-                }
-                mainSource = `turbo:frame-load for "#${frameId}"`;
-                if ( frameId === "todays-lessons-frame" ) {
-                    globalState.todaysLessonsFrameLoaded = true;
-                    if ( !globalState.stateStarting ) {
-                        globalState.stateStarting = true;
-                        await _start();
-                        return;
-                    }
-                    await main();
-                }
-                else if ( frameId === "lesson-and-review-count-frame" ) {
-                    globalState.navBarCountFrameLoaded = true;
-                    if ( !globalState.stateStarting ) {
-                        globalState.stateStarting = true;
-                        await _start();
-                        return;
-                    }
-                    await main();
-                }
-                mainSource = "";
-                globalState.turboEventBusy = false;
-            }
-        }, { urls: urlList, passive: true } );
-
-        addToDebugLog( `All turbo callbacks have been sent to TurboEvents library to be registered` );
-    } ).catch( ( err ) => {
-        addToDebugLog( `TurboEvents library rejected with error: ${err}` );
-    } ).finally( () => {
-        if ( INTERNAL_DEBUG_TURBO_HANDLING ) {
-            addToDebugLog( `SOURCE = "turbo ready finally"` );
-            printDebugLog( INTERNAL_DEBUG_TURBO_HANDLING );
-        }
-        _init( `wkof.ready('TurboEvents') finally callback` );
-    } );
-
-    async function _start() {
+    function start() {
         addToDebugLog( `Starting...` );
-        wkof.include( "Settings, Menu, Apiv2" );
-        await wkof.ready( "Settings, Menu, Apiv2" ).then( loadSettings ).then( insertMenu ).then( insertStylesheet )
-            .then( main )
-            .catch( ( err ) => {
-                addToDebugLog(
-                    `wkof.ready('Settings, Menu, Apiv2') rejected (or callbacks threw an exception) with error: ${err}`,
-                );
-            } )
-            .finally( () => {
-                if ( INTERNAL_DEBUG_TURBO_HANDLING ) {
-                    addToDebugLog( `SOURCE = "wkof modules ready finally"` );
-                    printDebugLog( INTERNAL_DEBUG_TURBO_HANDLING );
-                }
-            } );
+        if ( globalState.initialLoad ) {
+            insertStylesheet();
+            globalState.initialLoad = false;
+        }
+        globalState.pageLoaded = true;
+        if ( globalState.hasOutputLog ) globalState.hasOutputLog = false;
+        if ( globalState.mainRetryCounter < 4 ) globalState.mainRetryCounter = 4;
     }
 
     async function loadSettings() {
@@ -247,7 +163,6 @@
         };
 
         wkof.Menu.insert_script_link( config );
-        mainSource = `_start() -> loadSettings() -> insertMenu()`;
     }
 
     /**
@@ -255,13 +170,8 @@
      *
      * @param {WKOFDictionary} wkofSettings
      */
-    async function saveSettings( wkofSettings ) {
-        globalState.hasOutputLog = false;
-        addToDebugLog( `Save button was clicked on settings, calling main() with new settings...` );
-        mainSource = "wkof.Settings.save()";
+    function saveSettings( wkofSettings ) {
         settings = wkofSettings;
-        await main();
-        mainSource = "";
     }
 
     function openSettings() {
@@ -335,217 +245,216 @@
         }
     }
 
-    function getCountContainers() {
-        const dashboardTileCountContainer = document.querySelector(
-            ".todays-lessons-widget__count-text .count-bubble",
-        );
-        const navBarCountContainer = document.querySelector( ".lesson-and-review-count__count" );
-
-        if ( globalState.initialLoad && ( dashboardTileCountContainer || navBarCountContainer ) ) {
-            const container = dashboardTileCountContainer ?? navBarCountContainer;
-            if ( container ) todaysLessonsCount = parseInt( container.textContent );
-            globalState.initialLoad = false;
-        }
-
-        return [ dashboardTileCountContainer, navBarCountContainer ];
-    }
-
-    async function main() {
-        addToDebugLog( `Main function is executing... source of start = [${mainSource}]` );
-
-        if ( !settings ) {
-            addToDebugLog( `We do not have settings, setting timeout on _start()` );
-            if ( !globalState.stateStarting ) setTimeout( _start, 50 );
-            else addToDebugLog( `Did not set timeout due to already being in starting state` );
-            addToDebugLog( `Main function is returning (source = [${mainSource}])` );
-            return;
-        }
-        addToDebugLog( `We have settings` );
-
-        if ( !globalState.stateStarting && globalState.hasOutputLog ) {
-            globalState.hasOutputLog = false;
-            addToDebugLog( `Main function successfully executed beforehand, preventing repeat execution...` );
-            if ( settings.enableDebugging ) printDebugLog( INTERNAL_DEBUG_TURBO_HANDLING );
-            return;
-        }
-
-        let lessonCountContainers;
-
-        if ( globalState.todaysLessonsFrameLoaded || globalState.navBarCountFrameLoaded ) {
-            addToDebugLog( `Frame(s) loaded, retrieving containers in frames containing the counts...` );
-            lessonCountContainers = getCountContainers();
-            addToDebugLog( `Count containers have been retrieved` );
-        }
-        else {
-            addToDebugLog( `No frames loaded, checking to see if all listened-to turbo events have settled...` );
-            addToDebugLog(
-                `starting = ${globalState.stateStarting}, turboEventBusy = ${globalState.turboEventBusy}, retries = ${globalState.mainRetryCounter}`,
-            );
-            if ( globalState.stateStarting && !globalState.turboEventBusy && globalState.mainRetryCounter > 0 ) {
-                addToDebugLog(
-                    `Turbo Events have settled but we have not verified frames, using alternate verification...`,
-                );
-                /** @type {Element | null | undefined} */
-                let tmpContainer = document.querySelector( ".todays-lessons-widget__count-text" );
-                if ( tmpContainer && tmpContainer.childElementCount > 0 ) globalState.todaysLessonsFrameLoaded = true;
-                tmpContainer = document.getElementById( "lesson-and-review-count-frame" )?.querySelector(
-                    ".lesson-and-review-count",
-                );
-                if ( tmpContainer && tmpContainer.childElementCount > 0 ) globalState.navBarCountFrameLoaded = true;
-                mainSource = "main() function, no frames alternate verification";
-                globalState.mainRetryCounter--;
-                addToDebugLog(
-                    `Alternate verification process completed, retrying main(), ${globalState.mainRetryCounter} retries left...`,
-                );
-                await main();
-                mainSource = "";
-                return;
-            }
-            else if ( globalState.mainRetryCounter === 0 ) {
-                addToDebugLog(
-                    `Unable to verify loading of frames through alternate method, please refresh the page to try again from scratch`,
-                );
-            }
-            else {
-                addToDebugLog( `Turbo event callbacks are still executing, continuing...` );
-            }
-            addToDebugLog( `Main function is returning (source = [${mainSource}])` );
-            //if (settings.enableDebugging) printDebugLog(INTERNAL_DEBUG_TURBO_HANDLING);
-            return;
-        }
-
-        addToDebugLog( `Retrieving summary data via await of the endpoint...` );
-        const summaryData = await wkof.Apiv2.get_endpoint( "summary" );
-        addToDebugLog( `Summary data has been retrieved` );
-
+    /**
+     * Main function that manipulates the DOM
+     * @param {string} currentFrame
+     * @param {string} currentFrameId
+     */
+    function modifyFrame( currentFrame, currentFrameId ) {
         const totalLessonCount = summaryData.lessons[0].subject_ids.length;
         let isTileSizeOneThird = false;
 
-        let todaysCountForDisplay = todaysLessonsCount.toString();
+        if ( currentFrame.includes( "todays-lessons" ) ) {
+            const lessonCountContainer = document.getElementById( currentFrameId )?.querySelector(
+                ".todays-lessons-widget__count-text .count-bubble",
+            );
+            if ( lessonCountContainer ) {
+                todaysLessonsCount = parseInt( lessonCountContainer.textContent );
+                const todaysCountForDisplay = isNaN( todaysLessonsCount ) ? "0" : todaysLessonsCount.toString();
 
-        if ( lessonCountContainers.every( ( node ) => node == null ) ) {
-            addToDebugLog( `No nodes in containers` );
-            addToDebugLog( `Main function is returning (source = [${mainSource}])` );
-            //if (settings.enableDebugging) printDebugLog(INTERNAL_DEBUG_TURBO_HANDLING);
-            return;
-        }
-        addToDebugLog( `At least one container exists` );
-        globalState.stateStarting = false;
+                if ( settings.showTotalOnly ) {
+                    lessonCountContainer.textContent = totalLessonCount;
+                    addToDebugLog(
+                        `Setting display amount for Today's Lessons tile, set to ${lessonCountContainer.textContent}`,
+                    );
+                }
+                else {
+                    // The following follows no style conventions or cleanliness conventions, it's more akin to a bandaid than anything due to limited time
+                    // If anyone would like to clean this up, please feel free to submit a PR
 
-        if ( isNaN( todaysLessonsCount ) ) todaysCountForDisplay = "0";
+                    lessonCountContainer.textContent = todaysCountForDisplay; // in case it is zero
+                    // @ts-ignore: This needs to be fixed later, but for now, it is hardcoded that the div we want is 3 ancestors up
+                    const titleContainer = lessonCountContainer.parentNode.parentNode.parentNode; // .todays-lessons-widget__title-container
+                    // deno-fmt-ignore
+                    isTileSizeOneThird =
+                        /** @type {HTMLElement} */ ( titleContainer )?.closest( "turbo-frame.dashboard__widget--one-third" ) != null;
 
-        // must be the lesson tile container
-        if ( lessonCountContainers[0] ) {
-            const lessonCountContainer = lessonCountContainers[0];
-            if ( settings.showTotalOnly ) {
-                lessonCountContainer.textContent = totalLessonCount;
-                addToDebugLog(
-                    `Setting display amount for Today's Lessons tile, set to ${lessonCountContainer.textContent}`,
-                );
-            }
-            else {
-                // The following follows no style conventions or cleanliness conventions, it's more akin to a bandaid than anything due to limited time
-                // If anyone would like to clean this up, please feel free to submit a PR
+                    if ( titleContainer ) {
+                        if ( isTileSizeOneThird ) {
+                            // Do the one-third stuff
+                            const wrapper0 = document.createElement( "div" );
+                            wrapper0.classList.add( `todays-lessons-widget__text-wrapper` );
+                            titleContainer.querySelector( `.todays-lessons-widget__title` )?.firstElementChild
+                                ?.insertAdjacentElement( "afterend", wrapper0 );
+                            const countTextDiv = titleContainer.querySelector( `.todays-lessons-widget__count-text` );
+                            const countTextClone =
+                                /** @type {HTMLElement | undefined} */ ( countTextDiv?.cloneNode( true ) );
+                            if ( countTextDiv && countTextClone ) {
+                                // @ts-ignore: assert that firstElementChild will not be null
+                                countTextClone.firstElementChild.textContent = totalLessonCount;
+                                const forwardSlash = `<div class="todays-lessons-widget__title-text">/</div>`;
+                                wrapper0.insertAdjacentHTML( "afterbegin", forwardSlash );
+                                wrapper0.insertAdjacentElement( "afterbegin", countTextDiv );
+                                wrapper0.insertAdjacentElement( "beforeend", countTextClone );
 
-                lessonCountContainer.textContent = todaysCountForDisplay; // in case it is zero
-                // @ts-ignore: This needs to be fixed later, but for now, it is hardcoded that the div we want is 3 ancestors up
-                const titleContainer = lessonCountContainer.parentNode.parentNode.parentNode; // .todays-lessons-widget__title-container
-                // deno-fmt-ignore
-                isTileSizeOneThird =
-                    /** @type {HTMLElement} */ ( titleContainer )?.closest( "turbo-frame.dashboard__widget--one-third" ) != null;
-
-                if ( titleContainer ) {
-                    if ( isTileSizeOneThird ) {
-                        // Do the one-third stuff
-                        const wrapper0 = document.createElement( "div" );
-                        wrapper0.classList.add( `todays-lessons-widget__text-wrapper` );
-                        titleContainer.querySelector( `.todays-lessons-widget__title` )?.firstElementChild
-                            ?.insertAdjacentElement( "afterend", wrapper0 );
-                        const countTextDiv = titleContainer.querySelector( `.todays-lessons-widget__count-text` );
-                        const countTextClone =
-                            /** @type {HTMLElement | undefined} */ ( countTextDiv?.cloneNode( true ) );
-                        if ( countTextDiv && countTextClone ) {
-                            // @ts-ignore: assert that firstElementChild will not be null
-                            countTextClone.firstElementChild.textContent = totalLessonCount;
-                            const forwardSlash = `<div class="todays-lessons-widget__title-text">/</div>`;
-                            wrapper0.insertAdjacentHTML( "afterbegin", forwardSlash );
-                            wrapper0.insertAdjacentElement( "afterbegin", countTextDiv );
-                            wrapper0.insertAdjacentElement( "beforeend", countTextClone );
-
-                            addToDebugLog( `Manipulated DOM and created new nodes as needed.` );
+                                addToDebugLog( `Manipulated DOM and created new nodes as needed.` );
+                            }
+                            else {
+                                addToDebugLog(
+                                    `Failed to manipulate the DOM due to one or more elements being null or undefined.`,
+                                );
+                            }
                         }
                         else {
-                            addToDebugLog(
-                                `Failed to manipulate the DOM due to one or more elements being null or undefined.`,
-                            );
-                        }
-                    }
-                    else {
-                        // Do things that should only be done if not a one-third sized tile (half, two-thirds, full)
-                        if ( !titleContainer.children[0].className.includes( `__title-group-container` ) ) {
-                            // clone existing children, and modify clones to make new children, store in a temp array
-                            const tempArray = [];
-                            for ( const elem of titleContainer.children ) {
-                                const clone = /** @type {HTMLElement} */ ( elem.cloneNode( true ) );
-                                if ( clone && clone.className.includes( `__subtitle` ) ) {
-                                    clone.textContent = "Total";
+                            // Do things that should only be done if not a one-third sized tile (half, two-thirds, full)
+                            if ( !titleContainer.children[0].className.includes( `__title-group-container` ) ) {
+                                // clone existing children, and modify clones to make new children, store in a temp array
+                                const tempArray = [];
+                                for ( const elem of titleContainer.children ) {
+                                    const clone = /** @type {HTMLElement} */ ( elem.cloneNode( true ) );
+                                    if ( clone && clone.className.includes( `__subtitle` ) ) {
+                                        clone.textContent = "Total";
+                                    }
+                                    if ( clone.className.includes( `__title` ) ) {
+                                        const tmpNode = clone.querySelector(
+                                            `.todays-lessons-widget__count-text .count-bubble`,
+                                        );
+                                        if ( tmpNode ) tmpNode.textContent = totalLessonCount;
+                                    }
+                                    tempArray.push( clone );
                                 }
-                                if ( clone.className.includes( `__title` ) ) {
-                                    const tmpNode = clone.querySelector(
-                                        `.todays-lessons-widget__count-text .count-bubble`,
-                                    );
-                                    if ( tmpNode ) tmpNode.textContent = totalLessonCount;
-                                }
-                                tempArray.push( clone );
+
+                                // wrap the existing children in a new div.todays-lessons-widget__title-group-container
+                                // wrap the new children in the same kind of wrapper
+                                // append second wrapper after first wrapper
+
+                                const wrapper1 = document.createElement( "div" );
+                                wrapper1.classList.add( `todays-lessons-widget__title-group-container` );
+                                /** @type {HTMLElement} */ ( titleContainer ).insertAdjacentElement( "beforebegin", wrapper1 );
+                                wrapper1.append( ...titleContainer.children );
+                                titleContainer.prepend( wrapper1 ); // this should move the wrapper inside titleContainer
+
+                                const wrapper2 = document.createElement( "div" );
+                                wrapper2.classList.add( `todays-lessons-widget__title-group-container` );
+                                /** @type {HTMLElement} */ ( titleContainer ).insertAdjacentElement( "beforebegin", wrapper2 );
+                                wrapper2.append( ...tempArray );
+                                titleContainer.append( wrapper2 );
+
+                                addToDebugLog( `Created additional cloned nodes to display Total Lesson Count.` );
                             }
-
-                            // wrap the existing children in a new div.todays-lessons-widget__title-group-container
-                            // wrap the new children in the same kind of wrapper
-                            // append second wrapper after first wrapper
-
-                            const wrapper1 = document.createElement( "div" );
-                            wrapper1.classList.add( `todays-lessons-widget__title-group-container` );
-                            // @ts-expect-error: Expect error about titleContainer possibly being null
-                            titleContainer.insertAdjacentElement( "beforebegin", wrapper1 );
-                            wrapper1.append( ...titleContainer.children );
-                            titleContainer.prepend( wrapper1 ); // this should move the wrapper inside titleContainer
-
-                            const wrapper2 = document.createElement( "div" );
-                            wrapper2.classList.add( `todays-lessons-widget__title-group-container` );
-                            // @ts-expect-error: Expect error about titleContainer possibly being null
-                            titleContainer.insertAdjacentElement( "beforebegin", wrapper2 );
-                            wrapper2.append( ...tempArray );
-                            titleContainer.append( wrapper2 );
-
-                            addToDebugLog( `Created additional cloned nodes to display Total Lesson Count.` );
                         }
                     }
                 }
             }
-        }
 
-        // must be the nav bar container
-        if ( lessonCountContainers[1] ) {
-            // deno-fmt-ignore
-            lessonCountContainers[1].textContent = settings.showTotalOnly ?
-                `${totalLessonCount}` :
-                `${todaysCountForDisplay} / ${totalLessonCount}`;
-            addToDebugLog(
-                `Setting display amount for navigation bar, set to ${lessonCountContainers[1].textContent}`,
+            // hide "Today's" subtitle if showing only total OR if tile is only of size one-third
+
+            const lessonSubtitle = document.querySelector( ".todays-lessons-widget__subtitle" );
+
+            if (
+                ( settings.showTotalOnly || isTileSizeOneThird )
+                && lessonSubtitle
+                && lessonSubtitle.checkVisibility()
+            ) {
+                addToDebugLog( `Hiding the "Today's" subtitle on the lesson tile` );
+                /** @type {HTMLElement} */ ( lessonSubtitle ).style.display = "none";
+            }
+        }
+        else if ( currentFrame.includes( "lesson-and-review-count" ) ) {
+            const lessonCountContainer = document.getElementById( currentFrameId )?.querySelector(
+                ".lesson-and-review-count__count",
             );
+            if ( lessonCountContainer ) {
+                todaysLessonsCount = parseInt( lessonCountContainer.textContent );
+                const todaysCountForDisplay = isNaN( todaysLessonsCount ) ? "0" : todaysLessonsCount.toString();
+                // deno-fmt-ignore
+                lessonCountContainer.textContent = settings.showTotalOnly ?
+                    `${totalLessonCount}` :
+                    `${todaysCountForDisplay} / ${totalLessonCount}`;
+                addToDebugLog(
+                    `Setting display amount for navigation bar, set to ${lessonCountContainer.textContent}`,
+                );
+            }
         }
+    }
 
-        // hide "Today's" subtitle if showing only total OR if tile is only of size one-third
+    /**
+     * Main handler of turbo frames
+     * @param {string} currentFrame The pathname of the current frame of the on_frameload callback
+     * @param {Number} _frameIndex
+     * @param {string} currentFrameId
+     * @returns
+     */
+    function main( currentFrame, _frameIndex, currentFrameId ) {
+        addToDebugLog( `Main function is executing... source of start = [${mainSource}]` );
 
-        const lessonSubtitle = document.querySelector( ".todays-lessons-widget__subtitle" );
+        if ( !settings ) {
+            addToDebugLog( `Settings have not been loaded yet, main function is returning (source = [${mainSource}])` );
+            if ( !globalState.pageLoaded || ( globalState.pageLoaded && !globalState.wkofCallbacksSettled ) ) {
+                addToDebugLog( `Creating 50ms timeout for main() while page loads or wkof callbacks finish` );
+                setTimeout( () => {
+                    main( currentFrame, _frameIndex, currentFrameId );
+                }, 50 );
+            }
+            if ( globalState.pageLoaded && globalState.wkofCallbacksSettled ) printDebugLog( INTERNAL_DEBUG );
+            return;
+        }
+        addToDebugLog( `We have settings` );
 
-        if ( ( settings.showTotalOnly || isTileSizeOneThird ) && lessonSubtitle && lessonSubtitle.checkVisibility() ) {
-            addToDebugLog( `Hiding the "Today's" subtitle on the lesson tile` );
-            /** @type {HTMLElement} */ ( lessonSubtitle ).style.display = "none";
+        if ( globalState.pageLoaded && globalState.wkofCallbacksSettled ) {
+            let isFrameContentLoaded = false;
+            const currentTurboFrameElement = document.getElementById( currentFrameId );
+            if ( currentTurboFrameElement ) {
+                const child = currentTurboFrameElement.firstElementChild;
+                if ( child ) {
+                    const frameNameAsClassMember = currentFrame.slice( 1 ).replace( /^(widget)s\/(.+)/g, "$2-$1" );
+                    isFrameContentLoaded = child.classList.contains( frameNameAsClassMember );
+                    if ( isFrameContentLoaded ) {
+                        addToDebugLog(
+                            `Content for frame "${currentFrame}" has been loaded, proceeding with DOM manipulation.`,
+                        );
+                        modifyFrame( currentFrame, currentFrameId );
+                    }
+                    else {
+                        globalState.mainRetryCounter--;
+                        addToDebugLog(
+                            `Content for frame "${currentFrame}" was not successfully loaded yet, retrying... (retries left = ${globalState.mainRetryCounter})`,
+                        );
+                        if ( globalState.mainRetryCounter > 0 ) main( currentFrame, _frameIndex, currentFrameId );
+                        else if ( settings.enableDebugging ) printDebugLog( INTERNAL_DEBUG );
+                        return;
+                    }
+                }
+            }
+        }
+        else if ( globalState.pageLoaded && !globalState.wkofCallbacksSettled ) {
+            addToDebugLog( `wkof callback has not finished executing, setting more timeouts on main` );
+            setTimeout( () => {
+                main( currentFrame, _frameIndex, currentFrameId );
+            }, 100 );
+            return;
+        }
+        else {
+            globalState.mainRetryCounter--;
+            // deno-fmt-ignore
+            addToDebugLog(
+                `turbo:load has not fired or callback has not finished executing, ${
+                    globalState.mainRetryCounter > 0 ?
+                        `awaiting main again and returning... (retries left = ${globalState.mainRetryCounter})` :
+                        `there are no more retries.`
+                }`,
+            );
+            if ( globalState.mainRetryCounter > 0 ) {
+                main( currentFrame, _frameIndex, currentFrameId );
+            }
+            else {
+                if ( settings.enableDebugging ) printDebugLog( INTERNAL_DEBUG );
+            }
+            return;
         }
 
         addToDebugLog( `Main function has successfully executed` );
 
-        if ( settings.enableDebugging ) printDebugLog( INTERNAL_DEBUG_TURBO_HANDLING );
+        if ( settings.enableDebugging ) printDebugLog( true );
     }
 } )();
